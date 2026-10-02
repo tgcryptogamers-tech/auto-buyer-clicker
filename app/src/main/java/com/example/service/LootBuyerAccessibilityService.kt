@@ -1351,21 +1351,26 @@ class LootBuyerAccessibilityService : AccessibilityService() {
     }
 
     private fun extractDialogPrice(lines: List<com.google.mlkit.vision.text.Text.Line>): Double? {
+        // Priority 1: Check lines explicitly indicating payment/cost/price
         for (line in lines) {
             val t = line.text.lowercase()
-            if (t.contains("pay") || t.contains("заплат") || t.contains("cost") || t.contains("цена") || t.contains("стоимость")) {
-                val direct = extractPrice(line.text)
-                if (direct != null) return direct
-                val match = Regex("(\\d+(?:[.,]\\d+)?)").find(line.text)
+            if (t.contains("pay") || t.contains("заплат") || t.contains("cost") || t.contains("цена") || t.contains("стоимость") || t.contains("ton") || t.contains("$")) {
+                val match = Regex("(\\d+[.,]\\d+)").find(line.text)
                 if (match != null) {
                     val num = match.value.replace(',', '.').toDoubleOrNull()
                     if (num != null) return num
                 }
+                val direct = extractPrice(line.text)
+                if (direct != null && direct % 1.0 != 0.0) return direct
             }
         }
+        // Priority 2: ONLY look for decimal numbers (prices in game have decimals like 0.8500; plain integers like 100 or 1000 are quantities)
         for (line in lines) {
-            val p = extractPrice(line.text)
-            if (p != null) return p
+            val match = Regex("(\\d+[.,]\\d{2,})").find(line.text)
+            if (match != null) {
+                val num = match.value.replace(',', '.').toDoubleOrNull()
+                if (num != null) return num
+            }
         }
         return null
     }
