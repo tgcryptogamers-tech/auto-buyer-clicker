@@ -1,0 +1,6 @@
+{
+  "name": "Auto-Buyer Clicker",
+  "description": "Smart game auto-buyer and clicker with floating overlay control, accessibility gestures, and view-tree scanning.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
