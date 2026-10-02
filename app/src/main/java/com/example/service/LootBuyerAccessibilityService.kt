@@ -732,15 +732,13 @@ class LootBuyerAccessibilityService : AccessibilityService() {
             }
 
             // Parse and Group listings from the fresh target tab screen (avoiding top headers and bottom navigation)
-            val listingsYThresholdTop = freshBitmap.height * 0.40f
-            val listingsYThresholdBottom = freshBitmap.height * 0.88f
+            val listingsYThresholdTop = freshBitmap.height * 0.32f
+            val listingsYThresholdBottom = freshBitmap.height * 0.95f
             val listingLines = freshFilteredLines.filter { line ->
                 val bounds = line.boundingBox
                 val top = bounds?.top ?: 0
                 val bottom = bounds?.bottom ?: 0
-                top >= listingsYThresholdTop && bottom <= listingsYThresholdBottom &&
-                !isIgnoredListingLabel(line.text) &&
-                extractPrice(line.text) != null
+                top >= listingsYThresholdTop && bottom <= listingsYThresholdBottom
             }
 
             // Group lines into rows by vertical alignment (within 50 pixels)
@@ -782,10 +780,12 @@ class LootBuyerAccessibilityService : AccessibilityService() {
                     if (value != null && box != null) Pair(value, box) else null
                 }
                 if (numberPairs.isNotEmpty()) {
-                    val pricePair = numberPairs.filter { (_, box) ->
-                        val xRatio = box.centerX().toFloat() / freshBitmap.width
-                        xRatio in 0.38f..0.78f
-                    }.maxByOrNull { it.second.centerX() } ?: continue
+                    val pricePair = if (numberPairs.size == 1) {
+                        numberPairs.first()
+                    } else {
+                        // Pick the number with fractional part, or the rightmost number (market price column)
+                        numberPairs.lastOrNull { it.first % 1.0 != 0.0 } ?: numberPairs.maxByOrNull { it.second.centerX() }!!
+                    }
 
                     val price = pricePair.first
                     val otherNumbers = numberPairs.filter { it != pricePair }
@@ -828,16 +828,13 @@ class LootBuyerAccessibilityService : AccessibilityService() {
                 }
 
                 if (numberPairs.isNotEmpty()) {
-                    // In Money Mining, the price is strictly in the middle/right column (X: 38%..78% of width)
-                    // The quantity is in the left column (X < 38% of width)
-                    val pricePair = numberPairs.filter { (_, box) ->
-                        val xRatio = box.centerX().toFloat() / freshBitmap.width
-                        xRatio in 0.38f..0.78f
-                    }.maxByOrNull { it.second.centerX() }
-
-                    if (pricePair == null) {
-                        // Avoid mistaking quantity for price when price OCR fails
-                        continue
+                    // In market listings:
+                    // If multiple numbers are in the row: the price is the fractional/decimal value or the rightmost number,
+                    // while the quantity is the other (usually leftmost) number.
+                    val pricePair = if (numberPairs.size == 1) {
+                        numberPairs.first()
+                    } else {
+                        numberPairs.lastOrNull { it.first % 1.0 != 0.0 } ?: numberPairs.maxByOrNull { it.second.centerX() }!!
                     }
 
                     val price = pricePair.first
@@ -873,7 +870,7 @@ class LootBuyerAccessibilityService : AccessibilityService() {
                         "условия для покупки не соблюдаются ($conditionReason)"
                     }
 
-                    AutoBuyerLogs.addLog("Lot $foundLotsCount - Цена $price ($decisionText)")
+                    AutoBuyerLogs.addLog("Lot $foundLotsCount - Цена $price, Кол-во $q ($decisionText)")
 
                     if (matchesThreshold) {
                         if (config.enableActualBuying) {
@@ -1300,61 +1297,20 @@ class LootBuyerAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun isIgnoredListingLabel(text: String): Boolean {
-        val lower = text.lowercase().trim()
-        return lower.contains("showed") ||
-               lower.contains("from") ||
-               lower.contains("price") ||
-               lower.contains("low") ||
-               lower.contains("high") ||
-               lower.contains("buy") ||
-               lower.contains("sell") ||
-               lower.contains("mine") ||
-               lower.contains("storage") ||
-               lower.contains("task") ||
-               lower.contains("market") ||
-               lower.contains("resource") ||
-               lower.contains("page") ||
-               lower.contains("balance") ||
-               lower.contains("total") ||
-               lower.contains("on sale") ||
-               lower.contains("money") ||
-               lower.contains("mining") ||
-               lower.contains("confirm") ||
-               lower.contains("cancel") ||
-               lower.contains("рынок") ||
-               lower.contains("шахта") ||
-               lower.contains("склад") ||
-               lower.contains("задания") ||
-               lower.contains("ресурсы") ||
-               lower.contains("купить") ||
-               lower.contains("продать") ||
-               lower.contains("в продаже")
-    }
-
     /**
      * Extracts numerical price from text using Regex.
-     * E.g. "0.8000" -> 0.8, "8.0000" -> 8.0, "1200.0000" -> 1200.0
+     * E.g. "0.8000" -> 0.8, "0.8000 TON" -> 0.8, "100" -> 100.0, "1,500$" -> 1500.0
      */
     private fun extractPrice(text: String): Double? {
         if (text.isBlank()) return null
-        if (isIgnoredListingLabel(text)) return null
 
         try {
             val raw = text.trim()
-            val lettersCount = raw.count { it.isLetter() }
             val digitsCount = raw.count { it.isDigit() }
+            // If there are no digits and no OCR digit substitutes, skip
+            if (digitsCount == 0 && !raw.any { it in "OolIi|" }) return null
 
-            // Reject if text contains words or letters that are not OCR substitutes for digits
-            if (lettersCount > 0) {
-                val nonDigitLetters = raw.filter { it.isLetter() && it !in "OIil" }
-                if (nonDigitLetters.isNotEmpty()) {
-                    return null
-                }
-            }
-            if (digitsCount == 0) return null
-
-            var cleaned = raw.replace(" ", "")
+            var cleaned = raw
                 .replace('O', '0')
                 .replace('o', '0')
                 .replace('I', '1')
@@ -1362,50 +1318,31 @@ class LootBuyerAccessibilityService : AccessibilityService() {
                 .replace('|', '1')
                 .replace('i', '1')
 
-            if (!cleaned.contains('.') && cleaned.contains(',')) {
-                cleaned = cleaned.replace(',', '.')
+            // Look for decimal number pattern: digits.digits (e.g. 0.8000, 12.5000, 0,8000)
+            val decimalPattern = Pattern.compile("(\\d+[.,]\\d+)")
+            val decimalMatcher = decimalPattern.matcher(cleaned)
+            if (decimalMatcher.find()) {
+                val numStr = decimalMatcher.group(1)?.replace(',', '.')
+                val parsed = numStr?.toDoubleOrNull()
+                if (parsed != null) return parsed
             }
 
             // SMART OCR RECOVERY: If OCR completely missed the decimal dot in e.g. "08000" -> "0.8000"
-            if (!cleaned.contains('.')) {
-                val digitsOnly = cleaned.filter { it.isDigit() }
-                if (digitsOnly.length >= 5 && digitsOnly.startsWith("0")) {
-                    val insertPos = digitsOnly.length - 4
-                    cleaned = digitsOnly.substring(0, insertPos) + "." + digitsOnly.substring(insertPos)
-                }
+            val digitsOnly = cleaned.filter { it.isDigit() }
+            if (digitsOnly.length >= 5 && digitsOnly.startsWith("0")) {
+                val insertPos = digitsOnly.length - 4
+                val recovered = digitsOnly.substring(0, insertPos) + "." + digitsOnly.substring(insertPos)
+                val parsed = recovered.toDoubleOrNull()
+                if (parsed != null) return parsed
             }
 
-            val dotIndex = cleaned.indexOf('.')
-            if (dotIndex != -1) {
-                val preDotSb = StringBuilder()
-                for (i in (dotIndex - 1) downTo 0) {
-                    if (cleaned[i].isDigit()) {
-                        preDotSb.insert(0, cleaned[i])
-                    } else {
-                        break
-                    }
-                }
-                val preDotStr = if (preDotSb.isEmpty()) "0" else preDotSb.toString()
-
-                val postDotSb = StringBuilder()
-                for (i in (dotIndex + 1) until cleaned.length) {
-                    if (cleaned[i].isDigit()) {
-                        postDotSb.append(cleaned[i])
-                    } else {
-                        break
-                    }
-                }
-                val postDotStr = if (postDotSb.isEmpty()) "0" else postDotSb.toString()
-
-                return "$preDotStr.$postDotStr".toDoubleOrNull()
-            } else {
-                val pattern = Pattern.compile("(\\d{1,3}(?:,\\d{3})+|\\d+)")
-                val matcher = pattern.matcher(cleaned)
-                if (matcher.find()) {
-                    val matchedGroup = matcher.group(1) ?: return null
-                    val normalized = matchedGroup.replace(",", "")
-                    return normalized.toDoubleOrNull()
-                }
+            // Fallback for integer numbers (e.g. 500, 1000, 1,500)
+            val intPattern = Pattern.compile("(\\d{1,3}(?:,\\d{3})+|\\d+)")
+            val intMatcher = intPattern.matcher(cleaned)
+            if (intMatcher.find()) {
+                val matchedGroup = intMatcher.group(1) ?: return null
+                val normalized = matchedGroup.replace(",", "")
+                return normalized.toDoubleOrNull()
             }
         } catch (e: Exception) {
             // Ignore format issues
@@ -1496,24 +1433,12 @@ class LootBuyerAccessibilityService : AccessibilityService() {
         val lower = text.lowercase()
         return lower.contains("[") || 
                lower.contains("]") || 
-               lower.contains("лот") || 
-               lower.contains("мониторинг") || 
-               lower.contains("покупка") || 
-               lower.contains("panel") || 
-               lower.contains("панель") || 
                lower.contains("live log") || 
                lower.contains("threshold") || 
                lower.contains("mode:") || 
-               lower.contains("попытка") || 
-               lower.contains("кликаем") || 
-               lower.contains("координатах") || 
-               lower.contains("вкладку") || 
-               lower.contains("вкладки") || 
-               lower.contains("ocr:") || 
-               lower.contains("распознанные") ||
-               lower.contains("количество") ||
-               lower.contains("цена") ||
-               lower.contains("выполняем")
+               lower.contains("control panel") ||
+               lower.contains("панель управления") ||
+               lower.contains("autobuyer")
     }
 
     private fun isConfirmButtonText(text: String): Boolean {
