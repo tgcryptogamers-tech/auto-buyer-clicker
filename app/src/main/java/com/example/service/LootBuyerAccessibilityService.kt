@@ -267,6 +267,81 @@ class LootBuyerAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun saveDiscoveredTabCoordinate(tabName: String, x: Float, y: Float) {
+        when (tabName) {
+            "Ore" -> {
+                cachedTabOreX = x
+                cachedTabOreY = y
+            }
+            "Copper" -> {
+                cachedTabCopperX = x
+                cachedTabCopperY = y
+            }
+            "Silver" -> {
+                cachedTabSilverX = x
+                cachedTabSilverY = y
+            }
+            "Gold" -> {
+                cachedTabGoldX = x
+                cachedTabGoldY = y
+            }
+            "Sap" -> {
+                cachedTabSapX = x
+                cachedTabSapY = y
+            }
+        }
+        // Auto-persist to DB if not previously set, so coordinates survive across restarts
+        serviceScope.launch {
+            try {
+                val db = AppDatabase.getDatabase(applicationContext)
+                val current = db.configurationDao().getConfiguration() ?: return@launch
+                var shouldUpdate = false
+                var updated = current
+                if (tabName == "Ore" && current.calibratedOreX == -1f) {
+                    updated = updated.copy(calibratedOreX = x, calibratedOreY = y)
+                    shouldUpdate = true
+                } else if (tabName == "Copper" && current.calibratedCopperX == -1f) {
+                    updated = updated.copy(calibratedCopperX = x, calibratedCopperY = y)
+                    shouldUpdate = true
+                }
+                if (shouldUpdate) {
+                    db.configurationDao().saveConfiguration(updated)
+                    AutoBuyerLogs.addLog("💾 [АВТО-КАЛИБРОВКА] Координаты вкладки '$tabName' сохранены: (${x.toInt()}, ${y.toInt()})")
+                }
+            } catch (e: Exception) {
+                // Ignore DB error
+            }
+        }
+    }
+
+    private fun updateTabCoordinatesFromLines(
+        lines: List<com.google.mlkit.vision.text.Text.Line>,
+        scaleX: Float,
+        scaleY: Float,
+        screenHeight: Float
+    ) {
+        for (line in lines) {
+            val bounds = line.boundingBox ?: continue
+            val tX = bounds.centerX() * scaleX
+            val tY = bounds.centerY() * scaleY
+
+            // CRITICAL: Tab buttons are only in the upper region of the screen (12% to 48% of screen height)
+            // NEVER allow listing items from the bottom table to be mistaken for tabs!
+            if (tY < screenHeight * 0.12f || tY > screenHeight * 0.48f) continue
+
+            // Explicitly ignore Stones tab so it never gets cached as Ore or Copper
+            if (isStonesText(line.text)) continue
+
+            when {
+                isOreText(line.text) -> saveDiscoveredTabCoordinate("Ore", tX, tY)
+                isCopperText(line.text) -> saveDiscoveredTabCoordinate("Copper", tX, tY)
+                matchText(line.text, "Silver") -> saveDiscoveredTabCoordinate("Silver", tX, tY)
+                matchText(line.text, "Gold") -> saveDiscoveredTabCoordinate("Gold", tX, tY)
+                matchText(line.text, "Sap") -> saveDiscoveredTabCoordinate("Sap", tX, tY)
+            }
+        }
+    }
+
     private fun getTabCoordinates(
         tabName: String,
         filteredLines: List<com.google.mlkit.vision.text.Text.Line>,
@@ -276,7 +351,7 @@ class LootBuyerAccessibilityService : AccessibilityService() {
         scaleY: Float,
         config: AppConfiguration
     ): Pair<Float, Float> {
-        // If we have calibrated coordinates, use them first!
+        // Priority 1: Calibrated coordinates from DB
         when (tabName) {
             "Ore" -> if (config.calibratedOreX != -1f && config.calibratedOreY != -1f) {
                 return Pair(config.calibratedOreX, config.calibratedOreY)
@@ -295,10 +370,26 @@ class LootBuyerAccessibilityService : AccessibilityService() {
             }
         }
 
+        // Priority 2: In-memory cached coordinates
+        when (tabName) {
+            "Ore" -> if (cachedTabOreX != null && cachedTabOreY != null) return Pair(cachedTabOreX!!, cachedTabOreY!!)
+            "Copper" -> if (cachedTabCopperX != null && cachedTabCopperY != null) return Pair(cachedTabCopperX!!, cachedTabCopperY!!)
+            "Silver" -> if (cachedTabSilverX != null && cachedTabSilverY != null) return Pair(cachedTabSilverX!!, cachedTabSilverY!!)
+            "Gold" -> if (cachedTabGoldX != null && cachedTabGoldY != null) return Pair(cachedTabGoldX!!, cachedTabGoldY!!)
+            "Sap" -> if (cachedTabSapX != null && cachedTabSapY != null) return Pair(cachedTabSapX!!, cachedTabSapY!!)
+        }
+
+        // Priority 3: OCR search in tab bar region (12% to 48% height)
         var tabBounds: Rect? = null
         for (line in filteredLines) {
+            val bounds = line.boundingBox ?: continue
+            val centerY = bounds.centerY() * scaleY
+            if (centerY < screenHeight * 0.12f || centerY > screenHeight * 0.48f) continue
+            // Skip stones to prevent misidentifying stones as copper or ore
+            if (isStonesText(line.text)) continue
+
             if (matchText(line.text, tabName)) {
-                tabBounds = line.boundingBox
+                tabBounds = bounds
                 break
             }
         }
@@ -306,25 +397,28 @@ class LootBuyerAccessibilityService : AccessibilityService() {
         if (tabBounds != null) {
             val tabX = tabBounds.centerX() * scaleX
             val tabY = tabBounds.centerY() * scaleY
+            saveDiscoveredTabCoordinate(tabName, tabX, tabY)
             return Pair(tabX, tabY)
         }
 
-        // Fallback to calibrated coordinate percentages
-        val detectedTabY = filteredLines.firstOrNull { 
-            it.text.lowercase().contains("ore") || 
-            it.text.lowercase().contains("руда") ||
-            it.text.lowercase().contains("sap") ||
-            it.text.lowercase().contains("сап")
+        // Priority 4: Safe default coordinates
+        val detectedTabY = filteredLines.firstOrNull { line ->
+            val b = line.boundingBox ?: return@firstOrNull false
+            val cY = b.centerY() * scaleY
+            cY in (screenHeight * 0.12f)..(screenHeight * 0.48f) && (isOreText(line.text) || isCopperText(line.text))
         }?.boundingBox?.centerY()?.toFloat()?.let { it * scaleY }
         
-        val tabY = detectedTabY ?: (screenHeight * 0.43f)
+        val tabY = detectedTabY ?: (screenHeight * 0.38f)
         val tabX = when (tabName) {
-            "Ore" -> screenWidth * 0.06f
-            "Copper" -> screenWidth * 0.28f
+            "Ore" -> screenWidth * 0.08f
+            "Copper" -> {
+                // NEVER return 0.28f (which hits the Stones tab!). If Ore position is known, use it; otherwise 0.08f
+                if (cachedTabOreX != null) cachedTabOreX!! else screenWidth * 0.08f
+            }
             "Silver" -> screenWidth * 0.50f
             "Gold" -> screenWidth * 0.72f
             "Sap" -> screenWidth * 0.94f
-            else -> screenWidth * 0.06f
+            else -> screenWidth * 0.08f
         }
         return Pair(tabX, tabY)
     }
@@ -367,15 +461,15 @@ class LootBuyerAccessibilityService : AccessibilityService() {
             "Sap" -> if (cachedTabSapX != null && cachedTabSapY != null) return Pair(cachedTabSapX!!, cachedTabSapY!!)
         }
         
-        // Final fallback default calculations
-        val tabY = screenHeight * 0.43f
+        // Final fallback default calculations (SAFE: Never click Stones tab at 0.28f)
+        val tabY = screenHeight * 0.38f
         val tabX = when (tabName) {
-            "Ore" -> screenWidth * 0.06f
-            "Copper" -> screenWidth * 0.28f
+            "Ore" -> screenWidth * 0.08f
+            "Copper" -> if (cachedTabOreX != null) cachedTabOreX!! else screenWidth * 0.08f
             "Silver" -> screenWidth * 0.50f
             "Gold" -> screenWidth * 0.72f
             "Sap" -> screenWidth * 0.94f
-            else -> screenWidth * 0.06f
+            else -> screenWidth * 0.08f
         }
         return Pair(tabX, tabY)
     }
@@ -480,36 +574,18 @@ class LootBuyerAccessibilityService : AccessibilityService() {
                 !isInsideOverlay(screenBounds, screenWidth, screenHeight, density) && !isLogOrOverlayText(line.text)
             }
 
-            // Populate the tab coordinates cache dynamically
-            for (line in filteredLines) {
-                val text = line.text.lowercase()
-                val bounds = line.boundingBox ?: continue
-                val tX = bounds.centerX() * scaleX
-                val tY = bounds.centerY() * scaleY
-
-                when {
-                    text.contains("ore") || text.contains("руда") -> {
-                        cachedTabOreX = tX
-                        cachedTabOreY = tY
-                    }
-                    text.contains("copper") || text.contains("медь") -> {
-                        cachedTabCopperX = tX
-                        cachedTabCopperY = tY
-                    }
-                    text.contains("silver") || text.contains("серебро") -> {
-                        cachedTabSilverX = tX
-                        cachedTabSilverY = tY
-                    }
-                    text.contains("gold") || text.contains("золото") -> {
-                        cachedTabGoldX = tX
-                        cachedTabGoldY = tY
-                    }
-                    text.contains("sap") || text.contains("сапфир") -> {
-                        cachedTabSapX = tX
-                        cachedTabSapY = tY
-                    }
-                }
+            // Check if game accidentally switched to Stones tab and return to Ore immediately
+            if (isStonesScreenOrTab(filteredLines)) {
+                AutoBuyerLogs.addLog("⚠️ [ОШИБКА ВКЛАДКИ] Обнаружено случайное переключение на 'Камни'! Срочно возвращаемся на 'Руда'...")
+                val oreCoords = getTabCoordinatesCached("Ore", config, screenWidth, screenHeight)
+                clickAtWithRandomization(oreCoords.first, oreCoords.second, config)
+                delay(getTabSwitchDelay(config))
+                initialBitmap.recycle()
+                return@withContext
             }
+
+            // Populate the tab coordinates cache dynamically from the tab bar region
+            updateTabCoordinatesFromLines(filteredLines, scaleX, scaleY, screenHeight)
 
             // Check for rate-limit or system warning popups (e.g. "Try through 1 seconds")
             if (isRateLimitDialogShowing(allLines)) {
@@ -678,36 +754,18 @@ class LootBuyerAccessibilityService : AccessibilityService() {
                 !isInsideOverlay(screenBounds, screenWidth, screenHeight, density) && !isLogOrOverlayText(line.text)
             }
 
-            // Populate/Refresh the cache in every scan to keep it accurate
-            for (line in freshFilteredLines) {
-                val text = line.text.lowercase()
-                val bounds = line.boundingBox ?: continue
-                val tX = bounds.centerX() * scaleX
-                val tY = bounds.centerY() * scaleY
-
-                when {
-                    text.contains("ore") || text.contains("руда") -> {
-                        cachedTabOreX = tX
-                        cachedTabOreY = tY
-                    }
-                    text.contains("copper") || text.contains("медь") -> {
-                        cachedTabCopperX = tX
-                        cachedTabCopperY = tY
-                    }
-                    text.contains("silver") || text.contains("серебро") -> {
-                        cachedTabSilverX = tX
-                        cachedTabSilverY = tY
-                    }
-                    text.contains("gold") || text.contains("золото") -> {
-                        cachedTabGoldX = tX
-                        cachedTabGoldY = tY
-                    }
-                    text.contains("sap") || text.contains("сапфир") -> {
-                        cachedTabSapX = tX
-                        cachedTabSapY = tY
-                    }
-                }
+            // Check if game is on Stones tab and return to Ore immediately
+            if (isStonesScreenOrTab(freshFilteredLines)) {
+                AutoBuyerLogs.addLog("⚠️ [ОШИБКА ВКЛАДКИ] Обнаружено нахождение на вкладке 'Камни'! Срочно возвращаемся на 'Руда'...")
+                val oreCoords = getTabCoordinatesCached("Ore", config, screenWidth, screenHeight)
+                clickAtWithRandomization(oreCoords.first, oreCoords.second, config)
+                delay(getTabSwitchDelay(config))
+                freshBitmap.recycle()
+                return@withContext
             }
+
+            // Populate/Refresh the cache in every scan to keep it accurate
+            updateTabCoordinatesFromLines(freshFilteredLines, scaleX, scaleY, screenHeight)
 
             if (config.verboseOcrLogging) {
                 AutoBuyerLogs.addLog("=== [OCR: РАСПОЗНАННЫЕ СТРОКИ] ===")
@@ -1226,7 +1284,7 @@ class LootBuyerAccessibilityService : AccessibilityService() {
             GestureDescription.StrokeDescription(
                 path,
                 0, // start time
-                80 // duration (tap duration)
+                40 // snappy 40ms tap gesture
             )
         )
         dispatchGesture(
@@ -1257,8 +1315,8 @@ class LootBuyerAccessibilityService : AccessibilityService() {
     }
 
     private fun getTabSwitchDelay(config: AppConfiguration): Long {
-        val base = maxOf(80L, config.tabSwitchIntervalMs)
-        val randMax = config.tabSwitchRandomizationMs
+        val base = maxOf(10L, config.tabSwitchIntervalMs)
+        val randMax = maxOf(0, config.tabSwitchRandomizationMs)
         return if (randMax > 0) {
             val randomOffset = (0..randMax).random()
             base + randomOffset
@@ -1320,21 +1378,72 @@ class LootBuyerAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun matchText(detectedText: String, target: String): Boolean {
-        val lowerText = detectedText.lowercase().trim()
-        val lowerTarget = target.lowercase().trim()
-        if (lowerText.contains(lowerTarget)) return true
-        
-        val synonyms = when {
-            lowerTarget.contains("руда") || lowerTarget.contains("ore") -> listOf("руда", "ore")
-            lowerTarget.contains("медь") || lowerTarget.contains("copper") -> listOf("медь", "copper")
-            lowerTarget.contains("серебро") || lowerTarget.contains("silver") -> listOf("серебро", "silver")
-            lowerTarget.contains("золото") || lowerTarget.contains("gold") -> listOf("золото", "gold")
-            lowerTarget.contains("сапфир") || lowerTarget.contains("sapphire") || lowerTarget.contains("sap") || lowerTarget.contains("сап") -> listOf("сапфир", "sapphire", "sap", "сап")
-            else -> emptyList()
+    private fun normalizeRussianText(input: String): String {
+        return input.lowercase().trim()
+            .replace('m', 'м')
+            .replace('e', 'е')
+            .replace('p', 'р')
+            .replace('c', 'с')
+            .replace('o', 'о')
+            .replace('a', 'а')
+            .replace('x', 'х')
+            .replace('y', 'у')
+            .replace('k', 'к')
+            .replace('t', 'т')
+            .replace('b', 'в')
+            .replace('h', 'н')
+            .replace(" ", "")
+    }
+
+    private fun isOreText(text: String): Boolean {
+        val norm = normalizeRussianText(text)
+        return norm.contains("руда") || norm.contains("руды") || norm.contains("руд") || norm.contains("ore")
+    }
+
+    private fun isCopperText(text: String): Boolean {
+        val norm = normalizeRussianText(text)
+        return (norm.contains("медь") || norm.contains("мель") || norm.contains("меди") || norm.contains("мед") || norm.contains("copper")) && !norm.contains("медв")
+    }
+
+    private fun isStonesText(text: String): Boolean {
+        val norm = normalizeRussianText(text)
+        return norm.contains("камни") || norm.contains("камень") || norm.contains("камн") || norm.contains("stone")
+    }
+
+    private fun isStonesScreenOrTab(lines: List<com.google.mlkit.vision.text.Text.Line>): Boolean {
+        for (line in lines) {
+            val norm = normalizeRussianText(line.text)
+            // If stones tab is active or items are stones
+            if (norm.contains("камень") || norm.contains("камни") || norm.contains("гравий") || norm.contains("базальт")) {
+                return true
+            }
         }
-        
-        return synonyms.any { lowerText.contains(it) }
+        return false
+    }
+
+    private fun matchText(detectedText: String, target: String): Boolean {
+        val lowerTarget = target.lowercase().trim()
+        if (lowerTarget.contains("руда") || lowerTarget.contains("ore")) {
+            return isOreText(detectedText)
+        }
+        if (lowerTarget.contains("медь") || lowerTarget.contains("copper")) {
+            return isCopperText(detectedText)
+        }
+        if (lowerTarget.contains("серебро") || lowerTarget.contains("silver")) {
+            val norm = normalizeRussianText(detectedText)
+            return norm.contains("серебро") || norm.contains("silver") || norm.contains("серебр")
+        }
+        if (lowerTarget.contains("золото") || lowerTarget.contains("gold")) {
+            val norm = normalizeRussianText(detectedText)
+            return norm.contains("золото") || norm.contains("gold") || norm.contains("золот")
+        }
+        if (lowerTarget.contains("сапфир") || lowerTarget.contains("sapphire") || lowerTarget.contains("sap") || lowerTarget.contains("сап")) {
+            val norm = normalizeRussianText(detectedText)
+            return norm.contains("сапфир") || norm.contains("sapphire") || norm.contains("sap") || norm.contains("сап")
+        }
+        val normDetected = normalizeRussianText(detectedText)
+        val normTarget = normalizeRussianText(target)
+        return normDetected.contains(normTarget)
     }
 
     private fun isInsideOverlay(rect: Rect?, screenWidth: Float, screenHeight: Float, density: Float): Boolean {

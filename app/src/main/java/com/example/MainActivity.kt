@@ -832,7 +832,7 @@ fun DashboardScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Search Delay / Scan Period:", color = Color.LightGray, fontSize = 12.sp)
+                        Text("Search Delay / Пауза между циклами:", color = Color.LightGray, fontSize = 12.sp)
                         Text("${scanInterval.toInt()} ms", color = Color(0xFFD0BCFF), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                     Slider(
@@ -841,12 +841,13 @@ fun DashboardScreen(
                             scanInterval = it
                             saveConfig()
                         },
-                        valueRange = 50f..5000f,
+                        valueRange = 20f..5000f,
                         colors = SliderDefaults.colors(
                             thumbColor = Color(0xFF2196F3),
                             activeTrackColor = Color(0xFF2196F3)
                         )
                     )
+                    Text("💡 Пауза перед следующим циклом проверки. Для непрерывного быстрого обновления установите 20-50 ms.", color = Color.Gray, fontSize = 10.sp)
                 }
 
                 // Tab Switch Delay Slider
@@ -855,7 +856,7 @@ fun DashboardScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Tab Switch Delay (OCR Mode):", color = Color.LightGray, fontSize = 12.sp)
+                        Text("Tab Switch Delay / Скорость переключения вкладок:", color = Color.LightGray, fontSize = 12.sp)
                         Text("${tabSwitchInterval.toInt()} ms", color = Color(0xFF4CAF50), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                     Slider(
@@ -864,12 +865,13 @@ fun DashboardScreen(
                             tabSwitchInterval = it
                             saveConfig()
                         },
-                        valueRange = 50f..2000f,
+                        valueRange = 20f..2000f,
                         colors = SliderDefaults.colors(
                             thumbColor = Color(0xFF4CAF50),
                             activeTrackColor = Color(0xFF4CAF50)
                         )
                     )
+                    Text("💡 Интервал между кликами по вкладкам (Руда ↔ Медь).", color = Color.Gray, fontSize = 10.sp)
                 }
 
                 // Tab Switch Delay Randomization Slider / Input
