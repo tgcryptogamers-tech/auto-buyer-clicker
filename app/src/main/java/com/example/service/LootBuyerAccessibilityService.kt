@@ -593,14 +593,14 @@ class LootBuyerAccessibilityService : AccessibilityService() {
 
                 if (targetFound) {
                     val dialogPrice = extractDialogPrice(allLines)
-                    if (dialogPrice != null && config.usePriceThreshold) {
+                    if (dialogPrice != null && dialogPrice > 0.0 && dialogPrice % 1.0 != 0.0 && config.usePriceThreshold) {
                         val matches = if (config.isLessThanOperator) {
-                            dialogPrice < config.priceThreshold
+                            dialogPrice <= config.priceThreshold
                         } else {
-                            dialogPrice > config.priceThreshold
+                            dialogPrice >= config.priceThreshold
                         }
                         if (!matches) {
-                            AutoBuyerLogs.addLog("🛑 [ЗАЩИТА ЦЕНЫ] Окно подтверждения содержит цену $dialogPrice (не удовлетворяет условию ${if (config.isLessThanOperator) "<" else ">"} ${config.priceThreshold}). Закрываем окно!")
+                            AutoBuyerLogs.addLog("🛑 [ЗАЩИТА ЦЕНЫ] Окно подтверждения содержит цену $dialogPrice (не удовлетворяет условию ${if (config.isLessThanOperator) "<=" else ">="} ${config.priceThreshold}). Закрываем окно!")
                             dismissModalDialog(allLines, screenWidth, screenHeight, scaleX, scaleY)
                             initialBitmap.recycle()
                             return@withContext
@@ -988,14 +988,14 @@ class LootBuyerAccessibilityService : AccessibilityService() {
 
                                     if (targetDialogBuyLine != null) {
                                         val detectedDialogPrice = extractDialogPrice(dialogLines)
-                                        if (detectedDialogPrice != null && config.usePriceThreshold) {
+                                        if (detectedDialogPrice != null && detectedDialogPrice > 0.0 && detectedDialogPrice % 1.0 != 0.0 && config.usePriceThreshold) {
                                             val matches = if (config.isLessThanOperator) {
-                                                detectedDialogPrice < config.priceThreshold
+                                                detectedDialogPrice <= config.priceThreshold
                                             } else {
-                                                detectedDialogPrice > config.priceThreshold
+                                                detectedDialogPrice >= config.priceThreshold
                                             }
                                             if (!matches) {
-                                                AutoBuyerLogs.addLog("🛑 [ЗАЩИТА ЦЕНЫ] Окно подтверждения содержит цену $detectedDialogPrice (не удовлетворяет условию ${if (config.isLessThanOperator) "<" else ">"} ${config.priceThreshold}). Отменяем покупку!")
+                                                AutoBuyerLogs.addLog("🛑 [ЗАЩИТА ЦЕНЫ] Окно подтверждения содержит цену $detectedDialogPrice (не удовлетворяет условию ${if (config.isLessThanOperator) "<=" else ">="} ${config.priceThreshold}). Отменяем покупку!")
                                                 dismissModalDialog(dialogLines, screenWidth, screenHeight, scaleX, scaleY)
                                                 dialogBitmap.recycle()
                                                 break
@@ -1447,7 +1447,10 @@ class LootBuyerAccessibilityService : AccessibilityService() {
     }
 
     private fun isConfirmButtonText(text: String): Boolean {
-        val t = text.lowercase()
+        val t = text.lowercase().trim()
+        if (t == "ok" || t == "ок" || t == "оk" || t.startsWith("ok ") || t.endsWith(" ok") || t.startsWith("ок ") || t.endsWith(" ок")) {
+            return true
+        }
         return t.contains("confirm") || 
                t.contains("conflrm") || 
                t.contains("conlirm") || 
@@ -1470,13 +1473,10 @@ class LootBuyerAccessibilityService : AccessibilityService() {
                t.contains("confilm") || 
                t.contains("confilrm") || 
                t.contains("coníirm") || 
-               t.contains("conf") ||
                t.contains("подтвердить") || 
                t.contains("nодтвердить") || 
                t.contains("noдтвepдить") || 
                t.contains("podtverdit") ||
-               t.contains("оok") || 
-               t.contains("ok") ||
                t.contains("пoдтв")
     }
 
@@ -1679,28 +1679,22 @@ class LootBuyerAccessibilityService : AccessibilityService() {
     ): Boolean {
         val fullText = lines.joinToString(" ") { it.text.lowercase() }
         
-        val isRateLimitText = fullText.contains("try through") ||
-                              fullText.contains("cry througb") ||
-                              fullText.contains("try througb") ||
-                              fullText.contains("cry through") ||
-                              fullText.contains("througb") ||
-                              fullText.contains("through") ||
-                              fullText.contains("server is lost") ||
-                              fullText.contains("connection with") ||
-                              fullText.contains("cry connect") ||
-                              fullText.contains("try connect") ||
-                              fullText.contains("too fast") ||
-                              (fullText.contains("cry") && fullText.contains("second")) ||
-                              (fullText.contains("try") && fullText.contains("second")) ||
-                              (fullText.contains("cry") && fullText.contains("sec")) ||
-                              (fullText.contains("try") && fullText.contains("sec")) ||
-                              fullText.contains("попробуйте") ||
-                              fullText.contains("подождите")
+        val isRateLimitText = (fullText.contains("try through") ||
+                               fullText.contains("cry through") ||
+                               fullText.contains("try througb") ||
+                               fullText.contains("cry througb") ||
+                               fullText.contains("too fast") ||
+                               (fullText.contains("try") && fullText.contains("second")) ||
+                               (fullText.contains("cry") && fullText.contains("second")) ||
+                               (fullText.contains("try") && fullText.contains("sec")) ||
+                               (fullText.contains("cry") && fullText.contains("sec")) ||
+                               fullText.contains("попробуйте через") ||
+                               (fullText.contains("попробуйте") && fullText.contains("сек")) ||
+                               (fullText.contains("подождите") && fullText.contains("сек"))) &&
+                              !fullText.contains("price (low)") &&
+                              !fullText.contains("showed:")
 
-        val confirmLine = lines.firstOrNull { isConfirmButtonText(it.text) }
-        val hasConfirmButton = confirmLine != null
-
-        if (!isRateLimitText && !hasConfirmButton) {
+        if (!isRateLimitText) {
             return false
         }
 
@@ -1716,22 +1710,18 @@ class LootBuyerAccessibilityService : AccessibilityService() {
             return false
         }
 
-        // Exclude initial purchase confirmation dialog ONLY if isRateLimitText is false
-        if (!isRateLimitText) {
-            val hasBuyConfirmationText = lines.any { line ->
-                val t = line.text.lowercase()
-                t.contains("confirm purchase") || t.contains("подтвердите покупку")
-            }
-            if (hasBuyConfirmationText) {
-                return false
-            }
-        }
+        val screenWindowManager = getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
+        val screenMetrics = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION")
+        screenWindowManager.defaultDisplay.getRealMetrics(screenMetrics)
+        val screenW = screenMetrics.widthPixels.toFloat()
+        val screenH = screenMetrics.heightPixels.toFloat()
 
-        // Extract seconds to wait from lines mentioning time/seconds or through/througb
-        var secondsToWait = 1
+        // Extract seconds to wait STRICTLY from the lines describing the rate limit
+        var secondsToWait = 5
         val targetLines = lines.filter { line ->
             val t = line.text.lowercase()
-            t.contains("through") || t.contains("througb") || t.contains("second") || t.contains("sec") || t.contains("cry") || t.contains("try")
+            t.contains("through") || t.contains("througb") || t.contains("second") || t.contains("sec") || t.contains("через") || t.contains("сек")
         }
         val regex = Regex("(\\d+)")
         for (line in targetLines) {
@@ -1741,15 +1731,6 @@ class LootBuyerAccessibilityService : AccessibilityService() {
                 if (sec != null && sec in 1..120) {
                     secondsToWait = sec
                     break
-                }
-            }
-        }
-        if (secondsToWait == 1) {
-            val match = regex.find(fullText)
-            if (match != null) {
-                val sec = match.value.toIntOrNull()
-                if (sec != null && sec in 1..120) {
-                    secondsToWait = sec
                 }
             }
         }
@@ -1764,17 +1745,24 @@ class LootBuyerAccessibilityService : AccessibilityService() {
             clickX = config.calibratedConfirmX
             clickY = config.calibratedConfirmY
         } else {
-            val bounds = confirmLine?.boundingBox
-            if (bounds != null) {
-                clickX = bounds.centerX() * scaleX
-                clickY = bounds.centerY() * scaleY
+            // Find confirm button strictly inside the central modal dialog area (avoiding system bottom nav bar)
+            val confirmLine = lines.firstOrNull { line ->
+                val b = line.boundingBox
+                if (b != null) {
+                    val cX = b.centerX() * scaleX
+                    val cY = b.centerY() * scaleY
+                    val cXRatio = cX / screenW
+                    val cYRatio = cY / screenH
+                    isConfirmButtonText(line.text) && cXRatio in 0.20f..0.80f && cYRatio in 0.45f..0.82f
+                } else false
+            }
+
+            if (confirmLine?.boundingBox != null) {
+                clickX = confirmLine.boundingBox!!.centerX() * scaleX
+                clickY = confirmLine.boundingBox!!.centerY() * scaleY
             } else {
-                val screenWindowManager = getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
-                val screenMetrics = android.util.DisplayMetrics()
-                @Suppress("DEPRECATION")
-                screenWindowManager.defaultDisplay.getRealMetrics(screenMetrics)
-                clickX = screenMetrics.widthPixels / 2f
-                clickY = screenMetrics.heightPixels * 0.65f
+                clickX = screenW / 2f
+                clickY = screenH * 0.62f
             }
         }
 
