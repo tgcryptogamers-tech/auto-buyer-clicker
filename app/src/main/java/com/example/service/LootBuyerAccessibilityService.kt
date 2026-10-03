@@ -592,22 +592,7 @@ class LootBuyerAccessibilityService : AccessibilityService() {
                 }
 
                 if (targetFound) {
-                    val dialogPrice = extractDialogPrice(allLines)
-                    if (dialogPrice != null && dialogPrice > 0.0 && dialogPrice % 1.0 != 0.0 && config.usePriceThreshold) {
-                        val matches = if (config.isLessThanOperator) {
-                            dialogPrice <= config.priceThreshold
-                        } else {
-                            dialogPrice >= config.priceThreshold
-                        }
-                        if (!matches) {
-                            AutoBuyerLogs.addLog("🛑 [ЗАЩИТА ЦЕНЫ] Окно подтверждения содержит цену $dialogPrice (не удовлетворяет условию ${if (config.isLessThanOperator) "<=" else ">="} ${config.priceThreshold}). Закрываем окно!")
-                            dismissModalDialog(allLines, screenWidth, screenHeight, scaleX, scaleY)
-                            initialBitmap.recycle()
-                            return@withContext
-                        }
-                    }
-
-                    AutoBuyerLogs.addLog("🎉 [ПОДТВЕРЖДЕНИЕ] Окно подтверждения покупки обнаружено изначально (цена: ${dialogPrice ?: config.priceThreshold})! Кликаем подтверждение в координатах ($clickX, $clickY) с рандомизацией.")
+                    AutoBuyerLogs.addLog("🎉 [ПОДТВЕРЖДЕНИЕ] Окно подтверждения покупки обнаружено изначально! Кликаем подтверждение в координатах ($clickX, $clickY) с рандомизацией.")
                     clickAtWithRandomization(clickX, clickY, config)
 
                     // Save purchase record to database
@@ -617,7 +602,7 @@ class LootBuyerAccessibilityService : AccessibilityService() {
                             PurchaseRecord(
                                 timestamp = System.currentTimeMillis(),
                                 itemName = config.targetItemName,
-                                price = dialogPrice ?: config.priceThreshold,
+                                price = config.priceThreshold,
                                 quantity = 1.0,
                                 details = "Окно подтверждения обнаружено при запуске"
                             )
@@ -630,7 +615,7 @@ class LootBuyerAccessibilityService : AccessibilityService() {
                     // Set temporary cooldown while we verify the purchase result
                     cooldownUntilMillis = System.currentTimeMillis() + 15 * 1000L
                     AutoBuyerLogs.addLog("👉 Нажали подтверждение покупки (изначальное окно). Ожидаем результат...")
-                    verifyPurchaseResultAndHandleFailure(dialogPrice ?: config.priceThreshold, 1.0, config)
+                    verifyPurchaseResultAndHandleFailure(config.priceThreshold, 1.0, config)
                     initialBitmap.recycle()
                     return@withContext
                 }
@@ -987,21 +972,6 @@ class LootBuyerAccessibilityService : AccessibilityService() {
                                     }
 
                                     if (targetDialogBuyLine != null) {
-                                        val detectedDialogPrice = extractDialogPrice(dialogLines)
-                                        if (detectedDialogPrice != null && detectedDialogPrice > 0.0 && detectedDialogPrice % 1.0 != 0.0 && config.usePriceThreshold) {
-                                            val matches = if (config.isLessThanOperator) {
-                                                detectedDialogPrice <= config.priceThreshold
-                                            } else {
-                                                detectedDialogPrice >= config.priceThreshold
-                                            }
-                                            if (!matches) {
-                                                AutoBuyerLogs.addLog("🛑 [ЗАЩИТА ЦЕНЫ] Окно подтверждения содержит цену $detectedDialogPrice (не удовлетворяет условию ${if (config.isLessThanOperator) "<=" else ">="} ${config.priceThreshold}). Отменяем покупку!")
-                                                dismissModalDialog(dialogLines, screenWidth, screenHeight, scaleX, scaleY)
-                                                dialogBitmap.recycle()
-                                                break
-                                            }
-                                        }
-
                                         val dBounds = targetDialogBuyLine.boundingBox!!
                                         val dClickX = dBounds.centerX() * scaleX
                                         val dClickY = dBounds.centerY() * scaleY
@@ -1348,51 +1318,6 @@ class LootBuyerAccessibilityService : AccessibilityService() {
             // Ignore format issues
         }
         return null
-    }
-
-    private fun extractDialogPrice(lines: List<com.google.mlkit.vision.text.Text.Line>): Double? {
-        // Priority 1: Check lines explicitly indicating payment/cost/price
-        for (line in lines) {
-            val t = line.text.lowercase()
-            if (t.contains("pay") || t.contains("заплат") || t.contains("cost") || t.contains("цена") || t.contains("стоимость") || t.contains("ton") || t.contains("$")) {
-                val match = Regex("(\\d+[.,]\\d+)").find(line.text)
-                if (match != null) {
-                    val num = match.value.replace(',', '.').toDoubleOrNull()
-                    if (num != null) return num
-                }
-                val direct = extractPrice(line.text)
-                if (direct != null && direct % 1.0 != 0.0) return direct
-            }
-        }
-        // Priority 2: ONLY look for decimal numbers (prices in game have decimals like 0.8500; plain integers like 100 or 1000 are quantities)
-        for (line in lines) {
-            val match = Regex("(\\d+[.,]\\d{2,})").find(line.text)
-            if (match != null) {
-                val num = match.value.replace(',', '.').toDoubleOrNull()
-                if (num != null) return num
-            }
-        }
-        return null
-    }
-
-    private fun dismissModalDialog(
-        lines: List<com.google.mlkit.vision.text.Text.Line>,
-        screenWidth: Float,
-        screenHeight: Float,
-        scaleX: Float,
-        scaleY: Float
-    ) {
-        val cancelLine = lines.firstOrNull { line ->
-            val t = line.text.trim().lowercase()
-            t == "x" || t == "х" || t.contains("cancel") || t.contains("отмена") || t.contains("закрыть") || t.contains("close")
-        }
-        if (cancelLine?.boundingBox != null) {
-            val cX = cancelLine.boundingBox!!.centerX() * scaleX
-            val cY = cancelLine.boundingBox!!.centerY() * scaleY
-            clickAt(cX, cY)
-        } else {
-            clickAt(screenWidth * 0.80f, screenHeight * 0.38f)
-        }
     }
 
     private fun matchText(detectedText: String, target: String): Boolean {
